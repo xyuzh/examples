@@ -12,7 +12,7 @@ from io import BytesIO
 # SCALABILITY CONFIGURATION FOR 2B+ IMAGES
 # ============================================================================
 # num_images = 100
-num_model_replicas = 32
+num_model_replicas = 96
 tensor_parallelism = 1
 max_concurrent_downloads = 10 
 
