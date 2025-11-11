@@ -1,12 +1,13 @@
 import os
+import asyncio
 import ray
 from huggingface_hub import HfFileSystem
 from ray.data.llm import vLLMEngineProcessorConfig, build_llm_processor
 from PIL import Image
 from io import BytesIO
-import urllib3
-from concurrent.futures import ThreadPoolExecutor, as_completed
-import logging
+import aiohttp
+from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timezone
 
 
 
@@ -16,74 +17,103 @@ import logging
 # num_images = 100
 num_model_replicas = 32
 tensor_parallelism = 1
-max_concurrent_downloads = 10 
-
-from datetime import datetime, timezone
+download_concurrency = 1000
+download_timeout = 5
 
 timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-
 output_path = f"/mnt/shared_storage/process_images_output/{timestamp}"
 
 
-def image_download(batch):
-    """Get the url from the batch and download the image,
-    if successful, return the image bytes, otherwise return None"""
-    import httpx  # Much faster than urllib3
-    
-    # httpx with HTTP/2 support for multiplexing
-    client = httpx.Client(
-        http2=True,
-        limits=httpx.Limits(max_connections=50, max_keepalive_connections=50),
-        timeout=httpx.Timeout(5.0, connect=3.0),
-        follow_redirects=True,
-    )
-    
-    def download_single(url):
-        if not url or not isinstance(url, str):
+def is_valid_url(url):
+    if not url or not isinstance(url, str):
+        return False
+    url_lower = url.lower().strip()
+    return url_lower.startswith('http://') or url_lower.startswith('https://')
+
+
+async def download_single_image(session, url, semaphore):
+    async with semaphore:
+        if not is_valid_url(url):
             return None
-        url_lower = url.lower().strip()
-        if not (url_lower.startswith('http://') or url_lower.startswith('https://')):
-            return None
+        
         try:
-            response = client.get(url)
-            if response.status_code == 200 and response.content:
-                return response.content
-            return None
+            async with session.get(url, timeout=aiohttp.ClientTimeout(total=download_timeout)) as response:
+                if response.status == 200:
+                    content = await response.read()
+                    return content
+                return None
         except Exception:
             return None
+
+
+async def download_images_async(urls):
+    semaphore = asyncio.Semaphore(download_concurrency)
     
+    connector = aiohttp.TCPConnector(
+        limit=download_concurrency,
+        limit_per_host=100,
+        ttl_dns_cache=300,
+        enable_cleanup_closed=True
+    )
+    
+    timeout_config = aiohttp.ClientTimeout(total=download_timeout, connect=3)
+    
+    async with aiohttp.ClientSession(connector=connector, timeout=timeout_config) as session:
+        tasks = [download_single_image(session, url, semaphore) for url in urls]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+    
+    processed_results = []
+    for result in results:
+        if isinstance(result, Exception):
+            processed_results.append(None)
+        else:
+            processed_results.append(result)
+    
+    return processed_results
+
+
+def image_download(batch):
     urls = batch["url"]
     
-    # Increase thread pool to match batch processing
-    with ThreadPoolExecutor(max_workers=50) as executor:
-        results = list(executor.map(download_single, urls))
+    try:
+        loop = asyncio.get_event_loop()
+        if loop.is_closed():
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+    except RuntimeError:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
     
+    results = loop.run_until_complete(download_images_async(urls))
     batch["bytes"] = results
     return batch
 
+def process_single_image(image_bytes):
+    if image_bytes is None:
+        return None
+    
+    try:
+        img = Image.open(BytesIO(image_bytes))
+        img.load()
+        
+        if img.mode != "RGB":
+            img = img.convert("RGB")
+        
+        img = img.resize((128, 128), Image.Resampling.LANCZOS)
+        
+        output_buffer = BytesIO()
+        img.save(output_buffer, format="JPEG", quality=95)
+        return output_buffer.getvalue()
+    except Exception:
+        return None
+
+
 def process_image_bytes(batch):
-    """Process image bytes"""
     image_bytes_list = batch["bytes"]
     
-    def process_single_image(image_bytes):
-        """Process a single image, return processed bytes or None on failure"""
-        if image_bytes is None:
-            return None
-        try:
-            img = Image.open(BytesIO(image_bytes))
-            img.load()  # Force full image loading to detect truncation
-            if img.mode != "RGB":
-                img = img.convert("RGB")
-            img = img.resize((128, 128), Image.Resampling.LANCZOS)
-            output_buffer = BytesIO()
-            img.save(output_buffer, format="JPEG", quality=95)
-            return output_buffer.getvalue()
-        except Exception:
-            return None
-    
-    # Process each image in the batch
     with ThreadPoolExecutor(max_workers=50) as executor:
         results = list(executor.map(process_single_image, image_bytes_list))
+    
     batch["bytes"] = results
     return batch
 
@@ -97,24 +127,21 @@ vision_processor_config = vLLMEngineProcessorConfig(
         enable_chunked_prefill=True,
         max_num_batched_tokens=2048,
     ),
-    # Override Ray's runtime env to include the Hugging Face token. Ray Data uses Ray under the hood to orchestrate the inference pipeline.
     runtime_env=dict(
         env_vars=dict(
             VLLM_USE_V1="1",
             VLLM_DISABLE_COMPILE_CACHE="1",
         ),
     ),
-    batch_size=8,  # Reduced from 16 to lower memory usage
-    max_concurrent_batches=16,  # Increased to saturate vLLM engine (8 * 16 = 128)
+    batch_size=8,
+    max_concurrent_batches=16,
     accelerator_type="A10G",
     concurrency=num_model_replicas,
     has_image=True,
 )
 
 
-def vision_preprocess(row: dict) -> dict:
-    # Keep image data as base64 string for Arrow serialization
-    # The vLLM engine will handle the conversion internally
+def vision_preprocess(row):
     image_bytes = row["bytes"]
     return dict(
         messages=[
@@ -136,7 +163,7 @@ def vision_preprocess(row: dict) -> dict:
     )
 
 
-def vision_postprocess(row: dict) -> dict:
+def vision_postprocess(row):
     row.pop("bytes")
     return row
 
@@ -147,17 +174,15 @@ vision_processor = build_llm_processor(
     postprocess=vision_postprocess,
 )
 
-
 num_cpu = 512
 tasks_per_cpu = 1
 concurrency = num_cpu * tasks_per_cpu
+
 ctx = ray.data.DataContext.get_current()
 target_block_size_mb = 128
 ctx.target_max_block_size = target_block_size_mb * 1024 * 1024
 ctx.use_push_based_shuffle = False
 
-
-# Data pipeline with scalability optimizations
 dataset = (
     ray.data.read_parquet(
         "hf://datasets/laion/relaion2B-en-research-safe/",
@@ -170,21 +195,13 @@ dataset = (
     )
     .map_batches(image_download, batch_size=50, num_cpus=0.5, concurrency=1024)
     .drop_columns(["url"])
-    .map_batches(
-        process_image_bytes,
-        batch_size=50,
-        num_cpus=1,
-    )
+    .map_batches(process_image_bytes, batch_size=50, num_cpus=1)
     .filter(lambda row: row["bytes"] is not None)
-) 
+)
 
-
-# Apply vision processing with scaled replicas
-# Note: image_base64 column is dropped in vision_postprocess to avoid Arrow serialization issues
 dataset = vision_processor(dataset)
 
-# Write with optimizations for throughput and fault tolerance
 dataset.write_parquet(
     output_path,
-    max_rows_per_file=100000,  # ~100K rows per file for manageable file sizes
+    max_rows_per_file=100000,
 )
