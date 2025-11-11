@@ -15,7 +15,7 @@ compute_config:
   # Uses default disk sizes (~100GB). Cannot customize disk with auto-selection.
   min_resources:
     CPU: 0
-    GPU: 0
+    GPU: 96
   max_resources:
     CPU: 1024
     GPU: 128

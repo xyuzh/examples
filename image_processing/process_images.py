@@ -208,9 +208,9 @@ dataset = (
         num_cpus=2,
         memory=int(4 * 1024**3),
     )
-    .map_batches(image_download, batch_size=500, num_cpus=1)
+    .map_batches(image_download, batch_size=100, num_cpus=0.5)
     .drop_columns(["url"])
-    .map_batches(process_image_bytes, batch_size=500, num_cpus=1)
+    .map_batches(process_image_bytes, batch_size=100, num_cpus=0.5)
     .filter(lambda row: row["bytes"] is not None)
 )
 
