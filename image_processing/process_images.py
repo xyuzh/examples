@@ -15,7 +15,7 @@ from datetime import datetime, timezone
 # SCALABILITY CONFIGURATION FOR 2B+ IMAGES
 # ============================================================================
 # num_images = 100
-num_model_replicas = 32
+num_model_replicas = 96
 tensor_parallelism = 1
 download_concurrency = 1000
 download_timeout = 5
@@ -72,19 +72,34 @@ async def download_images_async(urls):
     return processed_results
 
 
-def image_download(batch):
-    urls = batch["url"]
+def run_async_in_thread(coro):
+    """Run async coroutine in a separate thread with its own event loop."""
+    import threading
+    result = None
+    exception = None
     
-    try:
-        loop = asyncio.get_event_loop()
-        if loop.is_closed():
+    def run_in_thread():
+        nonlocal result, exception
+        try:
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
-    except RuntimeError:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
+            result = loop.run_until_complete(coro)
+            loop.close()
+        except Exception as e:
+            exception = e
     
-    results = loop.run_until_complete(download_images_async(urls))
+    thread = threading.Thread(target=run_in_thread)
+    thread.start()
+    thread.join()
+    
+    if exception:
+        raise exception
+    return result
+
+
+def image_download(batch):
+    urls = batch["url"]
+    results = run_async_in_thread(download_images_async(urls))
     batch["bytes"] = results
     return batch
 
@@ -193,9 +208,9 @@ dataset = (
         num_cpus=2,
         memory=int(4 * 1024**3),
     )
-    .map_batches(image_download, batch_size=50, num_cpus=0.5, concurrency=1024)
+    .map_batches(image_download, batch_size=500, num_cpus=1)
     .drop_columns(["url"])
-    .map_batches(process_image_bytes, batch_size=50, num_cpus=1)
+    .map_batches(process_image_bytes, batch_size=500, num_cpus=1)
     .filter(lambda row: row["bytes"] is not None)
 )
 

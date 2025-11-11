@@ -1,5 +1,4 @@
 # View the docs https://docs.anyscale.com/reference/job-api#jobconfig.
-
 name: process-images
 
 # When empty, use the default image. This can be an Anyscale-provided base image
