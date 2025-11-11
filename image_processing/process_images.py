@@ -1,12 +1,10 @@
 import os
 import ray
+from ray.data.expressions import download
 from huggingface_hub import HfFileSystem
 from ray.data.llm import vLLMEngineProcessorConfig, build_llm_processor
 from PIL import Image
 from io import BytesIO
-import urllib3
-from concurrent.futures import ThreadPoolExecutor, as_completed
-import logging
 
 
 
@@ -25,42 +23,6 @@ timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
 output_path = f"/mnt/shared_storage/process_images_output/{timestamp}"
 
 
-def image_download(batch):
-    """Get the url from the batch and download the image,
-    if successful, return the image bytes, otherwise return None"""
-    import httpx  # Much faster than urllib3
-    
-    # httpx with HTTP/2 support for multiplexing
-    client = httpx.Client(
-        http2=True,
-        limits=httpx.Limits(max_connections=50, max_keepalive_connections=50),
-        timeout=httpx.Timeout(5.0, connect=3.0),
-        follow_redirects=True,
-    )
-    
-    def download_single(url):
-        if not url or not isinstance(url, str):
-            return None
-        url_lower = url.lower().strip()
-        if not (url_lower.startswith('http://') or url_lower.startswith('https://')):
-            return None
-        try:
-            response = client.get(url)
-            if response.status_code == 200 and response.content:
-                return response.content
-            return None
-        except Exception:
-            return None
-    
-    urls = batch["url"]
-    
-    # Increase thread pool to match batch processing
-    with ThreadPoolExecutor(max_workers=50) as executor:
-        results = list(executor.map(download_single, urls))
-    
-    batch["bytes"] = results
-    return batch
-
 def process_image_bytes(batch):
     """Process image bytes"""
     image_bytes_list = batch["bytes"]
@@ -70,6 +32,8 @@ def process_image_bytes(batch):
         if image_bytes is None:
             return None
         try:
+            img = Image.open(BytesIO(image_bytes))
+            img.verify()  # This checks if file is broken
             img = Image.open(BytesIO(image_bytes))
             img.load()  # Force full image loading to detect truncation
             if img.mode != "RGB":
@@ -82,9 +46,7 @@ def process_image_bytes(batch):
             return None
     
     # Process each image in the batch
-    with ThreadPoolExecutor(max_workers=50) as executor:
-        results = list(executor.map(process_single_image, image_bytes_list))
-    batch["bytes"] = results
+    batch["bytes"] = [process_single_image(img_bytes) for img_bytes in image_bytes_list]
     return batch
 
 
@@ -168,12 +130,13 @@ dataset = (
         num_cpus=2,
         memory=int(4 * 1024**3),
     )
-    .map_batches(image_download, batch_size=50, num_cpus=0.5, concurrency=1024)
+    .with_column("bytes", download("url"))
     .drop_columns(["url"])
     .map_batches(
         process_image_bytes,
         batch_size=50,
-        num_cpus=1,
+        memory=int(2 * 1024**3),
+        num_cpus=2,
     )
     .filter(lambda row: row["bytes"] is not None)
 ) 
