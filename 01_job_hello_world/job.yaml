@@ -6,7 +6,7 @@ name: my-first-job
 # like anyscale/ray:2.43.0-slim-py312-cu125, a user-provided base image (provided
 # that it meets certain specs), or you can build new images using the Anyscale
 # image builder at https://console.anyscale-staging.com/v2/container-images.
-image_uri:  # anyscale/ray:2.43.0-slim-py312-cu125
+image_uri:  anyscale/ray:2.51.1-slim-py312-cu125
 
 # When empty, Anyscale will auto-select the instance types. You can also specify
 # minimum and maximum resources.
@@ -25,12 +25,12 @@ compute_config:
 #       min_nodes: 0
 #       max_nodes: 100
 #       market_type: PREFER_SPOT # Defaults to ON_DEMAND
-#   min_resources:
-#     CPU: 100
-#     GPU: 1
-#   max_resources:
-#     CPU: 5000
-#     GPU: 100
+  min_resources:
+    CPU: 2
+    GPU: 0
+  max_resources:
+    CPU: 8
+    GPU: 2
 
 # Path to a local directory or a remote URI to a .zip file (S3, GS, HTTP) that
 # will be the working directory for the job. The files in the directory will be
