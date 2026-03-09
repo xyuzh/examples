@@ -27,7 +27,7 @@ anyscale job submit -f job.yaml
 Or with the larger model:
 
 ```bash
-anyscale job submit -f job.yaml --env MODEL_PATH=Qwen/Qwen3-30B-A3B-Instruct-2507
+anyscale job submit -f job.yaml --env MODEL_PATH=Qwen/Qwen3.5-27B
 ```
 
 ## Deploy as a service
@@ -41,7 +41,7 @@ anyscale service deploy -f service.yaml
 Or with the larger model:
 
 ```bash
-anyscale service deploy -f service.yaml --env MODEL_PATH=Qwen/Qwen3-30B-A3B-Instruct-2507
+anyscale service deploy -f service.yaml --env MODEL_PATH=Qwen/Qwen3.5-27B
 ```
 
 Wait for the service to be ready:
@@ -87,7 +87,7 @@ Override any variable at deploy/submit time with `--env`:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `MODEL_PATH` | `Qwen/Qwen3-1.7B` | HuggingFace model ID |
+| `MODEL_PATH` | `Qwen/Qwen3.5-2B` | HuggingFace model ID |
 | `TP_SIZE` | `4` | Tensor parallelism (GPUs per pipeline stage) |
 | `PP_SIZE` | `2` | Pipeline parallelism (number of stages) |
 | `NUM_NODES` | `2` | Nodes per replica |

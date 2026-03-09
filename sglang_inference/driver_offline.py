@@ -16,7 +16,7 @@ from ray.util.placement_group import placement_group
 from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
 
 # Configuration from environment (same as serve.py)
-MODEL_PATH = os.environ.get("MODEL_PATH", "Qwen/Qwen3-1.7B")
+MODEL_PATH = os.environ.get("MODEL_PATH", "Qwen/Qwen3.5-27B")
 TP_SIZE = int(os.environ.get("TP_SIZE", "4"))
 PP_SIZE = int(os.environ.get("PP_SIZE", "2"))
 NUM_NODES = int(os.environ.get("NUM_NODES", "2"))
@@ -31,9 +31,9 @@ class EngineActor:
     """
 
     def __init__(self, **kwargs):
-        from sglang import Engine
+        from sglang.srt.ray.engine import RayEngine
 
-        self.engine = Engine(**kwargs)
+        self.engine = RayEngine(**kwargs)
 
     def generate(self, prompts, sampling_params):
         return [
@@ -48,13 +48,13 @@ class EngineActor:
 def main():
     gpus_per_node = (TP_SIZE * PP_SIZE) // NUM_NODES
 
-    print(f"Configuration: MODEL_PATH={MODEL_PATH}, TP={TP_SIZE}, PP={PP_SIZE}, NUM_NODES={NUM_NODES}")
+    print(
+        f"Configuration: MODEL_PATH={MODEL_PATH}, TP={TP_SIZE}, PP={PP_SIZE}, NUM_NODES={NUM_NODES}"
+    )
     print(f"GPUs per node: {gpus_per_node}")
 
     # Reserve GPUs across nodes
-    pg = placement_group(
-        bundles=[{"CPU": 1, "GPU": gpus_per_node}] * NUM_NODES,
-    )
+    pg = placement_group(bundles=[{"CPU": 1, "GPU": gpus_per_node}] * NUM_NODES)
     ray.get(pg.ready())
     print("Placement group ready.")
 
@@ -63,14 +63,14 @@ def main():
         num_cpus=1,
         num_gpus=0,
         scheduling_strategy=PlacementGroupSchedulingStrategy(
-            placement_group=pg, placement_group_bundle_index=0,
+            placement_group=pg,
+            placement_group_bundle_index=0,
         ),
     ).remote(
         model_path=MODEL_PATH,
         tp_size=TP_SIZE,
         pp_size=PP_SIZE,
         nnodes=NUM_NODES,
-        use_ray=True,
     )
 
     # Wait for engine to be ready (model loaded)
